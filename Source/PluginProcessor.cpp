@@ -224,3 +224,8 @@ juce::AudioProcessorEditor* JustAHeadProcessor::createEditor()
 {
     return new JustAHeadEditor (*this);
 }
+
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new JustAHeadProcessor();
+}
