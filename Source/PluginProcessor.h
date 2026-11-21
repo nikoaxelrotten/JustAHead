@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cmath>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 
@@ -45,7 +46,7 @@ static inline float shapingCurve (float x, float drive) noexcept
 {
     x = juce::jlimit (-8.0f, 8.0f, x * drive);
     const float a = 0.65f;
-    return juce::jlimit (-1.0f, 1.0f, (1.0f + a) * x / (1.0f + a * juce::abs (x)));
+    return juce::jlimit (-1.0f, 1.0f, (1.0f + a) * x / (1.0f + a * std::abs (x)));
 }
 
 template <typename Fn>

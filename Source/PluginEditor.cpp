@@ -46,7 +46,8 @@ void JAHeadLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w
 
     const float angle = a0 + pos * (a1 - a0);
     juce::Path arc;
-    arc.addArc (r.reduced (3.0f), a0, angle, true);
+    auto rr = r.reduced (3.0f);
+    arc.addArc (rr.getX(), rr.getY(), rr.getWidth(), rr.getHeight(), a0, angle, true);
     g.setColour (accent);
     g.strokePath (arc, juce::PathStrokeType (3.0f));
 

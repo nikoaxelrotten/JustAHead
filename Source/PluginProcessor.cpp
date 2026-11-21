@@ -186,8 +186,8 @@ void JustAHeadProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const int n = buffer.getNumSamples();
     if (n <= 0) return;
 
-    auto choice = [this] (const char* id) { return (int) *apvts.getRawParameterValue (id); };
-    auto param  = [this] (const char* id) { return *apvts.getRawParameterValue (id); };
+    auto choice = [this] (const char* id) -> int   { return (int) apvts.getRawParameterValue (id)->load(); };
+    auto param  = [this] (const char* id) -> float { return apvts.getRawParameterValue (id)->load(); };
 
     head.setVoicing ((HeadModel::Voicing) choice ("head"), getSampleRate());
     head.setParams (param ("gain"), param ("bass"), param ("mid"), param ("treble"), param ("presence"), getSampleRate());
