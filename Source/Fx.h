@@ -9,7 +9,9 @@ struct FxParams
 {
     int mod = 0;                                   // 0 Off, 1 Chorus, 2 Flanger, 3 Phaser, 4 Tremolo, 5 Slicer, 6 Ring Mod
     float mrate = 3, mdepth = 6, mmix = 0.5f;      // rate y depth 0..10, mix 0..1
-    float mshape = 3;                              // 0..10: forma del tremolo (seno->cuadrada) y filo del slicer
+    float mshape = 3;
+    int mpat = 0;                                  // patron del slicer (0..5)
+    int order[3] = { 0, 1, 2 };                    // orden de los efectos: 0 Mod, 1 Delay, 2 Reverb                              // 0..10: forma del tremolo (seno->cuadrada) y filo del slicer
     float dtimeMs = 380, dfb = 0.35f, dmix = 0.0f; // delay
     float rsize = 4, rdamp = 5, rmix = 0.0f;       // reverb (size y damp 0..10)
     double bpm = 120.0, ppq = 0.0;
@@ -50,6 +52,16 @@ private:
     int hold = 0;
     bool open = true;
 };
+
+// Patrones del slicer (8 pasos): Gallop, Straight, Offbeat, Chug, 3-3-2, Stutter
+constexpr int kNumPatterns = 6;
+inline bool slicerStep (int pat, int step)
+{
+    static const bool t[kNumPatterns][8] = {
+        { 1, 1, 0, 1, 0, 1, 1, 0 }, { 1, 0, 1, 0, 1, 0, 1, 0 }, { 0, 1, 0, 1, 0, 1, 0, 1 },
+        { 1, 0, 1, 1, 1, 0, 1, 1 }, { 1, 0, 0, 1, 0, 0, 1, 0 }, { 1, 1, 1, 0, 1, 1, 1, 0 } };
+    return t[pat < 0 ? 0 : (pat >= kNumPatterns ? kNumPatterns - 1 : pat)][step & 7];
+}
 
 struct Smooth
 {
@@ -101,7 +113,8 @@ public:
         cur = -1;
     }
 
-    void process (const float* in, float* l, float* r, int n, const FxParams& p)
+    // Entrada estereo (inL/inR pueden ser los mismos buffers que l/r)
+    void process (const float* inL, const float* inR, float* l, float* r, int n, const FxParams& p)
     {
         if (p.mod != cur)
         {
@@ -110,7 +123,7 @@ public:
         }
         if (cur == 0)
         {
-            for (int i = 0; i < n; ++i) { l[i] = in[i]; r[i] = in[i]; }
+            for (int i = 0; i < n; ++i) { const float a = inL[i], b = inR[i]; l[i] = a; r[i] = b; }
             return;
         }
 
@@ -131,8 +144,8 @@ public:
             const double rate = sRate.next (p.mrate), depth = sDepth.next (p.mdepth), mix = sMix.next (p.mmix);
             fade = std::min (1.0, fade + fadeInc);
             const double m = (cur == 4 || cur == 5) ? fade : mix * fade;   // tremolo y slicer: 100% procesado, no dejan pasar senal
-            const float x = in[i];
-            double wl = x, wr = x;
+            const float xl = inL[i], xr = inR[i];
+            double wl = xl, wr = xr;
 
             switch (cur)
             {
@@ -141,7 +154,7 @@ public:
                     ph1 = wrap (ph1 + 0.1 * std::pow (40.0, rate / 10.0) / fs);
                     ph2 = wrap (ph2 + 0.127 * std::pow (40.0, rate / 10.0) / fs);
                     const double dm = 0.5 + depth / 10.0 * 5.5;
-                    cL.write (x); cR.write (x);
+                    cL.write (xl); cR.write (xr);
                     const double k = fs / 1000.0;
                     wl = 0.5 * (cL.read ((17.0 + dm * sn (ph1)) * k) + cL.read ((25.0 + dm * sn (ph2 + 0.25)) * k));
                     wr = 0.5 * (cR.read ((17.0 + dm * sn (ph1 + 0.5)) * k) + cR.read ((25.0 + dm * sn (ph2 + 0.75)) * k));
@@ -153,8 +166,8 @@ public:
                     const double sweep = 0.4 + depth / 10.0 * 4.0, k = fs / 1000.0;
                     wl = fL.read ((0.5 + sweep * (0.5 + 0.5 * sn (ph1))) * k);
                     wr = fR.read ((0.5 + sweep * (0.5 + 0.5 * sn (ph1 + 0.25))) * k);
-                    fL.write ((float) (x + 0.55 * wl));
-                    fR.write ((float) (x + 0.55 * wr));
+                    fL.write ((float) (xl + 0.55 * wl));
+                    fR.write ((float) (xr + 0.55 * wr));
                     break;
                 }
                 case 3: // Phaser: 6 allpass de primer orden con barrido exponencial
@@ -166,7 +179,7 @@ public:
                         const double lfo = 0.5 + 0.5 * sn (ph1 + (c ? 0.25 : 0.0));
                         const double f = 180.0 * std::pow (fmax / 180.0, lfo);
                         const double t = std::tan (kPi * f / fs), a = (t - 1.0) / (t + 1.0);
-                        double v = x + 0.4 * apFb[c];
+                        double v = (c ? xr : xl) + 0.4 * apFb[c];
                         for (int s = 0; s < 6; ++s)
                         {
                             const double y = a * v + apZ[c][s];
@@ -185,30 +198,29 @@ public:
                     const double lfo = std::tanh (kk * sn (ph1)) / std::tanh (kk);
                     const double tgtG = 1.0 - depth / 10.0 * (0.5 + 0.5 * lfo);
                     tg += (tgtG - tg) * trK;
-                    wl = wr = x * tg;
+                    wl = xl * tg; wr = xr * tg;
                     break;
                 }
                 case 5: // Slicer: patron de 8 pasos sincronizado al tempo
                 {
-                    static const bool pattern[8] = { true, true, false, true, false, true, true, false };
                     stepPos += 1.0;
                     if (stepPos >= stepSamples) { stepPos -= stepSamples; step = (step + 1) & 7; }
-                    const double target = pattern[step] ? 1.0 : 1.0 - depth / 10.0;
+                    const double target = slicerStep (p.mpat, step) ? 1.0 : 1.0 - depth / 10.0;
                     gate += (target - gate) * slK;
-                    wl = wr = x * gate;
+                    wl = xl * gate; wr = xr * gate;
                     break;
                 }
                 case 6: // Ring modulator: Depth pasa de AM a ring mod completo
                 {
                     ph1 = wrap (ph1 + 25.0 * std::pow (80.0, rate / 10.0) / fs);
                     const double d = depth / 10.0;
-                    wl = wr = x * ((1.0 - d) + d * sn (ph1));
+                    { const double rm = (1.0 - d) + d * sn (ph1); wl = xl * rm; wr = xr * rm; }
                     break;
                 }
                 default: break;
             }
-            l[i] = (float) (x * (1.0 - m) + wl * m);
-            r[i] = (float) (x * (1.0 - m) + wr * m);
+            l[i] = (float) (xl * (1.0 - m) + wl * m);
+            r[i] = (float) (xr * (1.0 - m) + wr * m);
         }
     }
 
@@ -369,12 +381,19 @@ public:
     {
         mod.prepare (sr); delay.prepare (sr); reverb.prepare (sr);
     }
-    // in: mono desde el amp. l/r: salida estereo.
+    // in: mono desde el amp. l/r: salida estereo. El orden de Mod, Delay y Reverb lo da p.order.
     void process (const float* in, float* l, float* r, int n, const FxParams& p)
     {
-        mod.process (in, l, r, n, p);
-        delay.process (l, r, n, p);
-        reverb.process (l, r, n, p);
+        for (int i = 0; i < n; ++i) { l[i] = in[i]; r[i] = in[i]; }
+        for (int k = 0; k < 3; ++k)
+        {
+            switch (p.order[k])
+            {
+                case 0:  mod.process (l, r, l, r, n, p); break;
+                case 1:  delay.process (l, r, n, p); break;
+                default: reverb.process (l, r, n, p); break;
+            }
+        }
     }
 
 private:

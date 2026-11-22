@@ -36,6 +36,7 @@ public:
                            float startAngle, float endAngle, juce::Slider&) override;
     void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
     juce::Font getTextButtonFont (juce::TextButton&, int) override;
+    juce::Font getPopupMenuFont() override;
     void drawCornerResizer (juce::Graphics&, int w, int h, bool, bool) override;
 
     int skin = 0;   // head activo (0..3)

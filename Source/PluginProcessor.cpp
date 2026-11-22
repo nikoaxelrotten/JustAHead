@@ -56,6 +56,12 @@ APVTS::ParameterLayout JustAHeadProcessor::createParameterLayout()
     };
     addFx ("mrate",  "Mod Rate",     0.0f, 10.0f,   3.0f, 0.1f, 1.0f, "");
     addFx ("mdepth", "Mod Depth",    0.0f, 10.0f,   6.0f, 0.1f, 1.0f, "");
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "mpat", 1 }, "Slicer Pattern",
+        StringArray { "Gallop", "Straight", "Offbeat", "Chug", "3-3-2", "Stutter" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "fxorder", 1 }, "FX Order",
+        StringArray { "Mod-Delay-Reverb", "Mod-Reverb-Delay", "Delay-Mod-Reverb", "Delay-Reverb-Mod", "Reverb-Mod-Delay", "Reverb-Delay-Mod" }, 0));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "don", 1 }, "Delay On", true));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "ron", 1 }, "Reverb On", true));
     addFx ("mshape", "Mod Shape",    0.0f, 10.0f,   3.0f, 0.1f, 1.0f, "");
     addFx ("gthr",   "Gate Threshold", -80.0f, -20.0f, -80.0f, 0.5f, 1.0f, " dB");
     addFx ("grel",   "Gate Release", 10.0f, 500.0f,  80.0f, 1.0f, 0.5f, " ms");
@@ -127,10 +133,16 @@ void JustAHeadProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const float gateThr = param ("gthr"), gateRel = param ("grel");
     fp.dtimeMs = param ("dtime");
     fp.dfb = param ("dfb") / 100.0f;
-    fp.dmix = param ("dmix") / 100.0f;
+    fp.dmix = param ("don") > 0.5f ? param ("dmix") / 100.0f : 0.0f;
     fp.rsize = param ("rsize");
     fp.rdamp = param ("rdamp");
-    fp.rmix = param ("rmix") / 100.0f;
+    fp.rmix = param ("ron") > 0.5f ? param ("rmix") / 100.0f : 0.0f;
+    fp.mpat = (int) param ("mpat");
+    {
+        static const int perms[6][3] = { {0,1,2}, {0,2,1}, {1,0,2}, {1,2,0}, {2,0,1}, {2,1,0} };
+        const int o = juce::jlimit (0, 5, (int) param ("fxorder"));
+        for (int k = 0; k < 3; ++k) fp.order[k] = perms[o][k];
+    }
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
         {

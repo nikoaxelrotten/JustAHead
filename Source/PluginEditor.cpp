@@ -46,9 +46,16 @@ JAHeadLookAndFeel::JAHeadLookAndFeel()
     setColour (juce::TextButton::textColourOffId, juce::Colour (0xffa7adb8));
     setColour (juce::TextButton::textColourOnId, juce::Colour (0xff101114));
     setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff5a626d));
+    setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff15171c));
+    setColour (juce::PopupMenu::textColourId, juce::Colour (0xffd5d9df));
+    setColour (juce::PopupMenu::headerTextColourId, juce::Colour (0xff8a919c));
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, juce::Colour (0xff2c3038));
+    setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
 }
 
-juce::Font JAHeadLookAndFeel::getTextButtonFont (juce::TextButton&, int) { return fnt (12.0f, juce::Font::bold); }
+juce::Font JAHeadLookAndFeel::getTextButtonFont (juce::TextButton& b, int) { return fnt (b.getProperties().contains ("small") ? 11.0f : 12.0f, juce::Font::bold); }
+
+juce::Font JAHeadLookAndFeel::getPopupMenuFont() { return fnt (13.0f); }
 
 void JAHeadLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
 {
@@ -323,7 +330,60 @@ private:
 };
 
 //==============================================================================
-class JustAHeadEditor::Content : public juce::Component
+// Caja de un modulo (panel con titulo). Los modulos de efectos se arrastran por el encabezado.
+class ModuleBox : public juce::Component
+{
+public:
+    ModuleBox (const juce::String& t, juce::Colour c, bool canDrag) : title (t), col (c), draggable (canDrag) {}
+
+    std::function<void (juce::Graphics&, juce::Rectangle<int>)> extraPaint;
+    std::function<void (ModuleBox&, const juce::MouseEvent&)> onDragStart, onDragMove, onDragEnd;
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+        g.setColour (juce::Colour (0xff15171c));
+        g.fillRoundedRectangle (r, 10.0f);
+        g.setColour (juce::Colour (0xff262930));
+        g.drawRoundedRectangle (r.reduced (0.5f), 10.0f, 1.0f);
+        juce::Path top;
+        top.addRoundedRectangle (0.0f, 0.0f, r.getWidth(), 4.0f, 10.0f, 10.0f, true, true, false, false);
+        g.setColour (col);
+        g.fillPath (top);
+        g.setFont (fnt (12.5f, juce::Font::bold));
+        g.drawText (title, draggable ? 22 : 18, 12, 140, 18, juce::Justification::centredLeft);
+        if (draggable)
+        {
+            g.setColour (juce::Colour (0xff5d636d));
+            for (int cx = 0; cx < 2; ++cx)
+                for (int cy = 0; cy < 3; ++cy)
+                    g.fillEllipse (8.0f + (float) cx * 5.0f, 14.0f + (float) cy * 5.0f, 2.6f, 2.6f);
+        }
+        if (extraPaint) extraPaint (g, getLocalBounds());
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        setMouseCursor (draggable && e.y < 34 ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+    }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (draggable && e.y < 34) { dragging = true; if (onDragStart) onDragStart (*this, e); }
+    }
+    void mouseDrag (const juce::MouseEvent& e) override { if (dragging && onDragMove) onDragMove (*this, e); }
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (dragging) { dragging = false; if (onDragEnd) onDragEnd (*this, e); }
+    }
+
+private:
+    juce::String title;
+    juce::Colour col;
+    bool draggable, dragging = false;
+};
+
+//==============================================================================
+class JustAHeadEditor::Content : public juce::Component, private juce::Timer
 {
 public:
     Content (JustAHeadProcessor& p, JAHeadLookAndFeel& l, std::function<void (float)> scaleCb)
@@ -333,70 +393,147 @@ public:
         const int   sizes[4] = { BinaryData::amp_british_jpgSize, BinaryData::amp_modern_jpgSize, BinaryData::amp_iommi_jpgSize, BinaryData::amp_thick_jpgSize };
         for (int i = 0; i < 4; ++i) heads[i] = juce::ImageCache::getFromMemory (data[i], sizes[i]);
 
-        // Selector de head
+        // --- Presets
+        prevBtn.setButtonText ("<"); nextBtn.setButtonText (">"); presetBtn.setButtonText ("");
+        presetBtn.getProperties().set ("small", true);
+        prevBtn.setBounds (186, 15, 28, 30); presetBtn.setBounds (218, 15, 176, 30); nextBtn.setBounds (398, 15, 28, 30);
+        prevBtn.onClick = [this] { stepPreset (-1); };
+        nextBtn.onClick = [this] { stepPreset (1); };
+        presetBtn.onClick = [this] { showPresetMenu(); };
+        for (auto* b : { &prevBtn, &presetBtn, &nextBtn }) addAndMakeVisible (*b);
+        lastPreset = proc.getCurrentProgram();
+        presetBtn.setButtonText (jah::presetName (lastPreset));
+        startTimerHz (5);
+
+        // --- Selector de head
         std::vector<juce::Colour> headCols;
         for (int i = 0; i < 4; ++i) headCols.push_back (skinFor (i).accent);
         headStrip = std::make_unique<ChoiceStrip> (p.apvts, "head", juce::StringArray { "British OD", "Modern 3Ch", "UK Iommi", "American Thick" },
                                                    headCols, 4, 38, 8, 201, true);
-        headStrip->setBounds (300, 12, 560, 38);
+        headStrip->setBounds (436, 12, 424, 38);
+        for (int i = 0; i < headStrip->getNumChildComponents(); ++i)
+            headStrip->getChildComponent (i)->getProperties().set ("small", true);
         addAndMakeVisible (*headStrip);
 
-        // Pedales
+        // --- Pedales
         pedalStrip = std::make_unique<ChoiceStrip> (p.apvts, "pedal", juce::StringArray { "Off", "Overdrive", "Distortion" },
                                                     std::vector<juce::Colour> { colPedal }, 3, 30, 6, 202, false);
         pedalStrip->setBounds (42, 108, 264, 30);
         addAndMakeVisible (*pedalStrip);
-
-        // Mods del overdrive (variantes de Tube Screamer)
         odStrip = std::make_unique<ChoiceStrip> (p.apvts, "odmod", juce::StringArray { "Stock", "Tight", "Hot", "Clean", "Mid+" },
                                                  std::vector<juce::Colour> { colPedal }, 5, 24, 4, 204, false);
         odStrip->setBounds (42, 146, 264, 24);
         addAndMakeVisible (*odStrip);
         pedalStrip->onChange = [this] (int i) { pedal = i; odStrip->setVisible (i == 1); repaint(); };
+        addKnob (*this, "drive", "DRIVE", 42, 350, 88, 56, false, colPedal, fmt1);
+        addKnob (*this, "ptone", "TONE", 130, 350, 88, 56, false, colPedal, fmt1);
+        addKnob (*this, "level", "LEVEL", 218, 350, 88, 56, false, colPedal, fmtDb);
 
-        // Mod
-        modStrip = std::make_unique<ChoiceStrip> (p.apvts, "mod", juce::StringArray { "Off", "Chorus", "Flanger", "Phaser", "Tremolo", "Slicer", "Ring Mod" },
-                                                  std::vector<juce::Colour> { colMod }, 4, 28, 6, 203, false);
-        modStrip->setBounds (228, 502, 336, 62);
-        addAndMakeVisible (*modStrip);
-
-        // Perillas de pedal
-        addKnob ("drive", "DRIVE", 42, 350, 88, 56, false, colPedal, fmt1);
-        addKnob ("ptone", "TONE", 130, 350, 88, 56, false, colPedal, fmt1);
-        addKnob ("level", "LEVEL", 218, 350, 88, 56, false, colPedal, fmtDb);
-
-        // Perillas del amp (en el panel de controles de abajo)
+        // --- Amp
         const char* ids[]   = { "gain", "bass", "mid", "treble", "presence", "master" };
         const char* names[] = { "GAIN", "BASS", "MID", "TREBLE", "PRESENCE", "MASTER" };
         for (int i = 0; i < 6; ++i)
-            ampKnobs.push_back (addKnob (ids[i], names[i], 340 + i * 139 + 19, 346, 100, 70, true, juce::Colours::white, i == 5 ? fmtDb : fmt1));
+            ampKnobs.push_back (addKnob (*this, ids[i], names[i], 340 + i * 139 + 19, 346, 100, 70, true, juce::Colours::white, i == 5 ? fmtDb : fmt1));
 
-        // Gate (antes del pedal y del amp)
-        addKnob ("gthr", "THRESH",  32, 574, 80, 58, false, colGate, fmtGate);
-        addKnob ("grel", "RELEASE", 112, 574, 80, 58, false, colGate, fmtMs);
+        // --- Gate (fijo, antes del pedal y del amp)
+        gateBox = std::make_unique<ModuleBox> ("GATE", colGate, false);
+        gateBox->setBounds (24, 466, 176, 222);
+        gateBox->extraPaint = [] (juce::Graphics& g, juce::Rectangle<int>)
+        {
+            g.setColour (juce::Colour (0xff6c727c)); g.setFont (fnt (11.0f));
+            g.drawText (juce::String::fromUTF8 ("Antes del pedal y el amp"), 8, 54, 160, 18, juce::Justification::centred);
+        };
+        addAndMakeVisible (*gateBox);
+        addKnob (*gateBox, "gthr", "THRESH", 8, 108, 80, 58, false, colGate, fmtGate);
+        addKnob (*gateBox, "grel", "RELEASE", 88, 108, 80, 58, false, colGate, fmtMs);
 
-        // Mod
-        addKnob ("mrate",  "RATE",  214 + 0 * 88, 574, 84, 58, false, colMod, fmt1);
-        addKnob ("mdepth", "DEPTH", 214 + 1 * 88, 574, 84, 58, false, colMod, fmt1);
-        shapeKnob = addKnob ("mshape", "SHAPE", 214 + 2 * 88, 574, 84, 58, false, colMod, fmt1);
-        mixKnob   = addKnob ("mmix",   "MIX",   214 + 3 * 88, 574, 84, 58, false, colMod, fmtPct);
+        // --- Mod (arrastrable)
+        modBox = std::make_unique<ModuleBox> ("MOD", colMod, true);
+        modBox->setSize (modW, 222);
+        modBox->extraPaint = [this] (juce::Graphics& g, juce::Rectangle<int> r)
+        {
+            if (modIdx != 5) return;
+            const float x0 = (float) r.getWidth() - 18.0f - 8.0f * 12.0f - 7.0f * 3.0f;
+            for (int i = 0; i < 8; ++i)
+            {
+                const bool on = jah::slicerStep (patIdx, i);
+                g.setColour (on ? colMod : juce::Colour (0xff2a2d34));
+                g.fillRoundedRectangle (x0 + (float) i * 15.0f, 13.0f, 12.0f, 12.0f, 2.5f);
+            }
+        };
+        modStrip = std::make_unique<ChoiceStrip> (p.apvts, "mod", juce::StringArray { "Off", "Chorus", "Flanger", "Phaser", "Tremolo", "Slicer", "Ring Mod" },
+                                                  std::vector<juce::Colour> { colMod }, 4, 28, 6, 203, false);
+        modStrip->setBounds (18, 36, 336, 62);
+        modBox->addAndMakeVisible (*modStrip);
+        patBtn.setBounds (18 + 3 * 85, 36 + 34, 79, 28);
+        patBtn.getProperties().set ("small", true);
+        patBtn.onClick = [this] { patAtt->setValueAsCompleteGesture ((float) ((patIdx + 1) % jah::kNumPatterns)); };
+        modBox->addChildComponent (patBtn);
+        addKnob (*modBox, "mrate",  "RATE",  4 + 0 * 88, 108, 84, 58, false, colMod, fmt1);
+        addKnob (*modBox, "mdepth", "DEPTH", 4 + 1 * 88, 108, 84, 58, false, colMod, fmt1);
+        shapeKnob = addKnob (*modBox, "mshape", "SHAPE", 4 + 2 * 88, 108, 84, 58, false, colMod, fmt1);
+        mixKnob   = addKnob (*modBox, "mmix",   "MIX",   4 + 3 * 88, 108, 84, 58, false, colMod, fmtPct);
 
-        // Delay + TAP
-        addKnob ("dtime",  "TIME",     596 + 0 * 92, 574, 84, 58, false, colDelay, fmtMs);
-        addKnob ("dfb",    "FEEDBACK", 596 + 1 * 92, 574, 84, 58, false, colDelay, fmtPct);
-        addKnob ("dmix",   "MIX",      596 + 2 * 92, 574, 84, 58, false, colDelay, fmtPct);
+        // --- Delay (arrastrable, con bypass y TAP)
+        delayBox = std::make_unique<ModuleBox> ("DELAY", colDelay, true);
+        delayBox->setSize (delayW, 222);
+        delayBox->extraPaint = [] (juce::Graphics& g, juce::Rectangle<int>)
+        {
+            g.setColour (juce::Colour (0xff6c727c)); g.setFont (fnt (11.0f));
+            g.drawText (juce::String::fromUTF8 ("Est\xc3\xa9reo ping-pong"), 12, 74, 272, 16, juce::Justification::centred);
+        };
+        for (int i = 0; i < 3; ++i)
+        {
+            const char* id[] = { "dtime", "dfb", "dmix" }; const char* nm[] = { "TIME", "FEEDBACK", "MIX" };
+            delayKnobs.push_back (addKnob (*delayBox, id[i], nm[i], 4 + i * 92, 108, 84, 58, false, colDelay, i == 0 ? fmtMs : fmtPct));
+        }
         tapButton.setButtonText ("TAP");
         tapButton.getProperties().set ("hint", (juce::int64) colDelay.getARGB());
-        tapButton.setBounds (685, 502, 118, 32);
+        tapButton.setBounds (93, 36, 118, 32);
         tapButton.onClick = [this] { tap(); };
-        addAndMakeVisible (tapButton);
+        delayBox->addAndMakeVisible (tapButton);
+        setupPower (*delayBox, delayOn, "don", colDelay, delayW, delayKnobs, &tapButton);
 
-        // Reverb
-        addKnob ("rsize",  "SIZE", 902 + 0 * 88, 574, 84, 58, false, colReverb, fmt1);
-        addKnob ("rdamp",  "DAMP", 902 + 1 * 88, 574, 84, 58, false, colReverb, fmt1);
-        addKnob ("rmix",   "MIX",  902 + 2 * 88, 574, 84, 58, false, colReverb, fmtPct);
+        // --- Reverb (arrastrable, con bypass)
+        reverbBox = std::make_unique<ModuleBox> ("REVERB", colReverb, true);
+        reverbBox->setSize (reverbW, 222);
+        reverbBox->extraPaint = [] (juce::Graphics& g, juce::Rectangle<int>)
+        {
+            g.setColour (juce::Colour (0xff6c727c)); g.setFont (fnt (11.0f));
+            g.drawText (juce::String::fromUTF8 ("Reverb FDN de 8 l\xc3\xadneas"), 12, 54, 254, 18, juce::Justification::centred);
+        };
+        const char* rid[] = { "rsize", "rdamp", "rmix" }; const char* rnm[] = { "SIZE", "DAMP", "MIX" };
+        for (int i = 0; i < 3; ++i)
+            reverbKnobs.push_back (addKnob (*reverbBox, rid[i], rnm[i], 4 + i * 88, 108, 84, 58, false, colReverb, i == 2 ? fmtPct : fmt1));
+        setupPower (*reverbBox, reverbOn, "ron", colReverb, reverbW, reverbKnobs, nullptr);
 
-        // Botones de escala
+        byId[0] = modBox.get(); byId[1] = delayBox.get(); byId[2] = reverbBox.get();
+        for (int id = 0; id < 3; ++id)
+        {
+            addAndMakeVisible (*byId[id]);
+            byId[id]->onDragStart = [this, id] (ModuleBox& b, const juce::MouseEvent& e) { dragStart (id, b, e); };
+            byId[id]->onDragMove  = [this, id] (ModuleBox& b, const juce::MouseEvent& e) { dragMove (id, b, e); };
+            byId[id]->onDragEnd   = [this, id] (ModuleBox& b, const juce::MouseEvent& e) { dragEnd (id, b, e); };
+        }
+        orderAtt = std::make_unique<juce::ParameterAttachment> (*p.apvts.getParameter ("fxorder"), [this] (float v)
+        {
+            const int o = juce::jlimit (0, 5, (int) std::round (v));
+            for (int k = 0; k < 3; ++k) order[k] = perms[o][k];
+            if (dragId < 0) layoutModules (initialised, -1);
+        });
+        orderAtt->sendInitialUpdate();
+        initialised = true;
+
+        // --- Patron del slicer
+        patAtt = std::make_unique<juce::ParameterAttachment> (*p.apvts.getParameter ("mpat"), [this] (float v)
+        {
+            patIdx = juce::jlimit (0, jah::kNumPatterns - 1, (int) std::round (v));
+            patBtn.setButtonText (patNames[patIdx]);
+            modBox->repaint();
+        });
+        patAtt->sendInitialUpdate();
+
+        // --- Escala
         const float scales[] = { 0.75f, 1.0f, 1.25f, 1.5f };
         const char* labels[] = { "75%", "100%", "125%", "150%" };
         for (int i = 0; i < 4; ++i)
@@ -414,14 +551,19 @@ public:
         headStrip->onChange = [this] (int i) { applySkin (i); };
         modStrip->onChange = [this] (int i)
         {
+            modIdx = i;
             shapeKnob->setActive (i == 4 || i == 5);              // Shape: solo tremolo y slicer
             mixKnob->setActive (i != 0 && i != 4 && i != 5);       // Mix: tremolo y slicer son 100% procesados
+            patBtn.setVisible (i == 5);                            // patron: solo slicer
+            modBox->repaint();
         };
         headStrip->start();
         pedalStrip->start();
         modStrip->start();
         odStrip->start();
     }
+
+    ~Content() override { stopTimer(); }
 
     void updateScaleHighlight (float s)
     {
@@ -444,7 +586,6 @@ public:
     {
         const auto& sk = skinFor (skin);
 
-        // Fondo
         g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1a1c21), 600.0f, 0.0f, juce::Colour (0xff0b0c0f), 600.0f, (float) designH, false));
         g.fillAll();
         g.setGradientFill (juce::ColourGradient (sk.accent.withAlpha (0.13f), 600.0f, -40.0f, sk.accent.withAlpha (0.0f), 600.0f, 420.0f, true));
@@ -467,17 +608,21 @@ public:
             for (int i = 0; i < 3; ++i)
             {
                 g.setColour (i == 1 ? sk.accent : juce::Colours::white);
-                g.drawText (parts[i], juce::Rectangle<float> (x, 14.0f, 200.0f, 30.0f), juce::Justification::centredLeft);
+                g.drawText (parts[i], juce::Rectangle<float> (x, 8.0f, 200.0f, 30.0f), juce::Justification::centredLeft);
                 x += width (parts[i]);
             }
             g.setColour (juce::Colour (0xff868c96));
             g.setFont (fnt (10.5f, juce::Font::bold));
-            g.drawText ("AMP SIM  -  VST3", 28, 40, 200, 14, juce::Justification::centredLeft);
+            g.drawText ("AMP SIM  -  VST3", 28, 36, 150, 14, juce::Justification::centredLeft);
             g.drawText ("ESCALA", 862, 16, 70, 30, juce::Justification::centredRight);
         }
 
         // --- Pedales
         drawModule (g, { 24.0f, 72.0f, 300.0f, 380.0f }, colPedal, "PEDALES");
+        g.setColour (juce::Colour (0xff6c727c));
+        g.setFont (fnt (11.0f));
+        if (pedal == 1)
+            g.drawText ("TUBE SCREAMER MOD", 42, 172, 264, 12, juce::Justification::centred);
         g.saveState();
         g.addTransform (juce::AffineTransform::scale (0.78f, 0.78f, 174.0f, 190.0f));
         drawStompbox (g, 174.0f, 190.0f);
@@ -511,7 +656,6 @@ public:
             g.setColour (juce::Colour (0xff262930));
             g.drawRoundedRectangle (amp.reduced (0.5f), 10.0f, 1.0f);
 
-            // Etiqueta de sección
             const juce::Rectangle<float> tag (amp.getX() + 12.0f, amp.getY() + 10.0f, 190.0f, 22.0f);
             g.setColour (juce::Colours::black.withAlpha (0.6f));
             g.fillRoundedRectangle (tag, 11.0f);
@@ -519,24 +663,123 @@ public:
             g.setFont (fnt (11.0f, juce::Font::bold));
             g.drawText (juce::String ("AMP  -  ") + juce::String (sk.name).toUpperCase(), tag.toNearestInt(), juce::Justification::centred);
         }
-
-        // --- Efectos
-        drawModule (g, { 24.0f, 466.0f, 176.0f, 222.0f }, colGate, "GATE");
-        drawModule (g, { 210.0f, 466.0f, 372.0f, 222.0f }, colMod, "MOD");
-        drawModule (g, { 592.0f, 466.0f, 296.0f, 222.0f }, colDelay, "DELAY");
-        drawModule (g, { 898.0f, 466.0f, 278.0f, 222.0f }, colReverb, "REVERB");
-        g.setColour (juce::Colour (0xff6c727c));
-        g.setFont (fnt (11.0f));
-        g.drawText (juce::String::fromUTF8 ("Antes del pedal y el amp"), 32, 520, 160, 18, juce::Justification::centred);
-        g.drawText (juce::String::fromUTF8 ("Est\xc3\xa9reo ping-pong"), 604, 540, 272, 16, juce::Justification::centred);
-        g.drawText (juce::String::fromUTF8 ("Reverb FDN de 8 l\xc3\xadneas"), 910, 520, 254, 18, juce::Justification::centred);
-        if (pedal == 1)
-        {
-            g.drawText ("TUBE SCREAMER MOD", 42, 172, 264, 12, juce::Justification::centred);
-        }
     }
 
 private:
+    static constexpr int modW = 372, delayW = 296, reverbW = 278, rowY = 466, rowX0 = 210, gapPx = 10;
+    static constexpr int perms[6][3] = { {0,1,2}, {0,2,1}, {1,0,2}, {1,2,0}, {2,0,1}, {2,1,0} };
+    const char* patNames[6] = { "Gallop", "Straight", "Offbeat", "Chug", "3-3-2", "Stutter" };
+
+    int widthOf (int id) const { return id == 0 ? modW : (id == 1 ? delayW : reverbW); }
+
+    void layoutModules (bool animate, int skipId)
+    {
+        int x = rowX0;
+        for (int k = 0; k < 3; ++k)
+        {
+            const int id = order[k];
+            const juce::Rectangle<int> r (x, rowY, widthOf (id), 222);
+            x += widthOf (id) + gapPx;
+            if (id == skipId) continue;
+            if (animate) animator.animateComponent (byId[id], r, 1.0f, 140, false, 1.0, 1.0);
+            else byId[id]->setBounds (r);
+        }
+    }
+
+    void dragStart (int id, ModuleBox& b, const juce::MouseEvent& e)
+    {
+        dragId = id;
+        dragOffset = e.getEventRelativeTo (this).x - b.getX();
+        animator.cancelAllAnimations (false);
+        b.toFront (false);
+    }
+    void dragMove (int id, ModuleBox& b, const juce::MouseEvent& e)
+    {
+        const int nx = juce::jlimit (rowX0, 1176 - b.getWidth(), e.getEventRelativeTo (this).x - dragOffset);
+        b.setTopLeftPosition (nx, rowY);
+        // orden segun el centro de cada modulo (los demas, en su casilla actual)
+        std::pair<int, int> c[3];
+        int x = rowX0;
+        for (int k = 0; k < 3; ++k)
+        {
+            const int mid = order[k];
+            c[k] = { mid == id ? nx + b.getWidth() / 2 : x + widthOf (mid) / 2, mid };
+            x += widthOf (mid) + gapPx;
+        }
+        std::sort (c, c + 3);
+        int newOrder[3] = { c[0].second, c[1].second, c[2].second };
+        if (newOrder[0] != order[0] || newOrder[1] != order[1] || newOrder[2] != order[2])
+        {
+            for (int k = 0; k < 3; ++k) order[k] = newOrder[k];
+            layoutModules (true, id);
+        }
+    }
+    void dragEnd (int, ModuleBox&, const juce::MouseEvent&)
+    {
+        const int saved = dragId;
+        dragId = -1;
+        layoutModules (true, -1);
+        for (int o = 0; o < 6; ++o)
+            if (perms[o][0] == order[0] && perms[o][1] == order[1] && perms[o][2] == order[2])
+                orderAtt->setValueAsCompleteGesture ((float) o);
+        juce::ignoreUnused (saved);
+    }
+
+    void setupPower (ModuleBox& box, juce::TextButton& btn, const char* pid, juce::Colour col, int boxW,
+                     std::vector<KnobUnit*>& ks, juce::TextButton* extra)
+    {
+        btn.setClickingTogglesState (true);
+        btn.setColour (juce::TextButton::buttonOnColourId, col);
+        btn.getProperties().set ("small", true);
+        btn.setBounds (boxW - 18 - 46, 8, 46, 22);
+        auto refresh = [&btn, ks, extra] ()
+        {
+            const bool on = btn.getToggleState();
+            btn.setButtonText (on ? "ON" : "OFF");
+            for (auto* k : ks) k->setActive (on);
+            if (extra != nullptr) extra->setEnabled (on);
+        };
+        btn.onStateChange = refresh;
+        box.addAndMakeVisible (btn);
+        powerAtts.push_back (std::make_unique<APVTS::ButtonAttachment> (proc.apvts, pid, btn));
+        refresh();
+    }
+
+    void stepPreset (int d)
+    {
+        const int n = jah::presetCount();
+        const int cur = proc.getCurrentProgram();
+        loadPreset (((cur + d) % n + n) % n);
+    }
+    void loadPreset (int i)
+    {
+        proc.loadPreset (i);
+        lastPreset = i;
+        presetBtn.setButtonText (jah::presetName (i));
+    }
+    void showPresetMenu()
+    {
+        juce::PopupMenu m;
+        const char* groups[] = { "", "British OD", "Modern 3Ch", "UK Iommi", "American Thick", "Especiales" };
+        for (int i = 0; i < jah::presetCount(); ++i)
+        {
+            if (i == 0 || i == 1 || i == 4 || i == 7 || i == 10 || i == 13)
+            {
+                const int g = i == 0 ? 0 : (i == 13 ? 5 : (i + 2) / 3);
+                if (i > 0) m.addSeparator();
+                if (g > 0) m.addSectionHeader (groups[g]);
+            }
+            m.addItem (i + 1, jah::presetName (i), true, i == proc.getCurrentProgram());
+        }
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetBtn).withMinimumWidth (220),
+                         [this] (int r) { if (r > 0) loadPreset (r - 1); });
+    }
+    void timerCallback() override
+    {
+        const int cur = proc.getCurrentProgram();
+        if (cur != lastPreset) { lastPreset = cur; presetBtn.setButtonText (jah::presetName (cur)); }
+    }
+
     void tap()
     {
         const double now = juce::Time::getMillisecondCounterHiRes();
@@ -599,12 +842,12 @@ private:
         g.drawEllipse (sw, 1.2f);
     }
 
-    KnobUnit* addKnob (const juce::String& pid, const juce::String& name, int x, int y, int w, int size, bool amp,
+    KnobUnit* addKnob (juce::Component& parent, const juce::String& pid, const juce::String& name, int x, int y, int w, int size, bool amp,
                        juce::Colour col, std::function<juce::String (double)> fmt)
     {
         auto u = std::make_unique<KnobUnit> (proc.apvts, pid, name, size, amp, col, std::move (fmt));
         u->setBounds (x, y, w, u->totalHeight());
-        addAndMakeVisible (*u);
+        parent.addAndMakeVisible (*u);
         auto* raw = u.get();
         knobs.push_back (std::move (u));
         return raw;
@@ -613,19 +856,25 @@ private:
     JustAHeadProcessor& proc;
     JAHeadLookAndFeel& laf;
     std::function<void (float)> setScale;
-    int skin = 0, pedal = 0;
+    int skin = 0, pedal = 0, modIdx = 0, patIdx = 0, lastPreset = 0, dragId = -1, dragOffset = 0;
+    int order[3] = { 0, 1, 2 };
+    bool initialised = false;
     juce::Image heads[4];
     std::unique_ptr<ChoiceStrip> headStrip, pedalStrip, modStrip, odStrip;
+    std::unique_ptr<ModuleBox> gateBox, modBox, delayBox, reverbBox;
+    ModuleBox* byId[3] = { nullptr, nullptr, nullptr };
+    std::vector<std::unique_ptr<KnobUnit>> knobs;
+    std::vector<KnobUnit*> ampKnobs, delayKnobs, reverbKnobs;
     KnobUnit* shapeKnob = nullptr;
     KnobUnit* mixKnob = nullptr;
-    juce::TextButton tapButton;
+    juce::TextButton tapButton, prevBtn, nextBtn, presetBtn, patBtn, delayOn, reverbOn;
+    std::vector<std::unique_ptr<APVTS::ButtonAttachment>> powerAtts;
+    std::unique_ptr<juce::ParameterAttachment> orderAtt, patAtt;
+    juce::ComponentAnimator animator;
     std::vector<double> taps;
-    std::vector<std::unique_ptr<KnobUnit>> knobs;
-    std::vector<KnobUnit*> ampKnobs;
     std::array<juce::TextButton, 4> scaleButtons;
 };
 
-//==============================================================================
 JustAHeadEditor::JustAHeadEditor (JustAHeadProcessor& p) : AudioProcessorEditor (&p), proc (p)
 {
     // Leer el tamaño guardado antes de nada: setResizeLimits() dispara resized() y lo pisaría.
