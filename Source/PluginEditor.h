@@ -3,15 +3,26 @@
 
 namespace jahead
 {
-    const juce::Colour darkPanel   { 0xff1b1e22 };
-    const juce::Colour panelEdge   { 0xff3a4148 };
-    const juce::Colour headerBg    { 0xff101418 };
-    const juce::Colour accent      { 0xffff8b2c };
-    const juce::Colour accent2     { 0xff4fd2ff };
-    const juce::Colour textLight   { 0xffe8ecef };
-    const juce::Colour ring        { 0xff4a5158 };
-    constexpr int designW = 760;
-    constexpr int designH = 380;
+    constexpr int designW = 1200;
+    constexpr int designH = 700;
+
+    // Un "skin" por head: color de acento, carácter del panel de controles y de las perillas.
+    struct Skin
+    {
+        const char* name;
+        juce::Colour accent;
+        juce::Colour stripTop, stripBottom;
+        juce::Colour knobHi, knobLo, pointer;
+        juce::Colour label, value;
+    };
+
+    const Skin& skinFor (int head);
+
+    // Colores propios de cada módulo
+    const juce::Colour colPedal  { 0xfff0a030 };
+    const juce::Colour colMod    { 0xffb36bf0 };
+    const juce::Colour colDelay  { 0xff38d39f };
+    const juce::Colour colReverb { 0xff7f8cff };
 }
 
 //==============================================================================
@@ -22,8 +33,11 @@ public:
 
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
                            float startAngle, float endAngle, juce::Slider&) override;
-    juce::Font getLabelFont (juce::Label&) override;
-    juce::Font getComboBoxFont (juce::ComboBox&) override;
+    void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
+    juce::Font getTextButtonFont (juce::TextButton&, int) override;
+    void drawCornerResizer (juce::Graphics&, int w, int h, bool, bool) override;
+
+    int skin = 0;   // head activo (0..3)
 };
 
 //==============================================================================
@@ -32,29 +46,13 @@ class JustAHeadEditor : public juce::AudioProcessorEditor
 public:
     explicit JustAHeadEditor (JustAHeadProcessor&);
     ~JustAHeadEditor() override;
-
-    void paint (juce::Graphics&) override;
     void resized() override;
 
 private:
-    JustAHeadProcessor& processor;
-    JAHeadLookAndFeel lookAndFeel;
-
-    juce::ComboBox headBox, pedalBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> headAtt, pedalAtt;
-
-    struct Knob
-    {
-        juce::Slider slider;
-        juce::Label label;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
-    };
-
-    Knob gainK, bassK, midK, trebleK, presenceK;
-    Knob driveK, toneK, levelK, masterK;
-
-    juce::Label title, headLabel, pedalLabel, pedalTitle, headTitle, masterTitle;
-    juce::Label hint;
+    class Content;
+    JustAHeadProcessor& proc;
+    JAHeadLookAndFeel laf;
+    std::unique_ptr<Content> content;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JustAHeadEditor)
 };

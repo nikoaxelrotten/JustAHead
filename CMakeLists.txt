@@ -24,6 +24,12 @@ else()
   FetchContent_MakeAvailable(JUCE)
 endif()
 
+juce_add_binary_data(JustAHeadAssets SOURCES
+  Assets/amp_british.jpg
+  Assets/amp_modern.jpg
+  Assets/amp_iommi.jpg
+  Assets/amp_thick.jpg)
+
 juce_add_plugin(JustAHead
   COMPANY_NAME "JustAHead"
   PLUGIN_MANUFACTURER_CODE Jhad
@@ -47,6 +53,7 @@ target_compile_definitions(JustAHead PUBLIC
 
 target_link_libraries(JustAHead
   PRIVATE
+    JustAHeadAssets
     juce::juce_audio_utils
     juce::juce_dsp
   PUBLIC

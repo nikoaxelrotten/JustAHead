@@ -2,133 +2,11 @@
 #include "PluginEditor.h"
 
 using APVTS = juce::AudioProcessorValueTreeState;
-using Coeff = juce::dsp::IIR::Coefficients<float>;
 
-static float dbToGain (float db) { return juce::Decibels::decibelsToGain (db); }
-
-//==============================================================================
-void HeadModel::reset (double sr, int maxSamples)
+static float sanitize (float v)
 {
-    oversampling.initProcessing ((size_t) maxSamples);
-    oversampling.reset();
-    inHP.reset(); lowS.reset(); midPk.reset(); highSh.reset(); pres.reset(); outLP.reset();
-    updateVoicing (sr);
-    setParams (18.0f, 5.0f, 5.0f, 5.0f, 5.0f, sr);
-}
-
-void HeadModel::setVoicing (Voicing v, double sr)
-{
-    if (v == voicing) return;
-    voicing = v;
-    updateVoicing (sr);
-}
-
-void HeadModel::updateVoicing (double sr)
-{
-    float hpf = 35.0f, lpf = 12000.0f;
-    switch (voicing)
-    {
-        case Voicing::BritishOD:     hpf = 35.0f;  lpf = 12000.0f; break;
-        case Voicing::Modern3Ch:     hpf = 25.0f;  lpf = 14000.0f; break;
-        case Voicing::UKIommi:       hpf = 40.0f;  lpf = 10000.0f; break;
-        case Voicing::AmericanThick: hpf = 30.0f;  lpf = 13000.0f; break;
-    }
-    inHP.setCoefficients (Coeff::makeHighPass (sr, hpf));
-    outLP.setCoefficients (Coeff::makeLowPass (sr, lpf));
-}
-
-void HeadModel::setParams (float gainDb, float bass, float mid, float treble, float p, double sr)
-{
-    preGain = dbToGain (gainDb) * 1.15f;
-    presenceDb = p;
-    makeup = dbToGain (-6.0f);
-
-    float bassF = 100.0f, midF = 820.0f, trebF = 3000.0f;
-    switch (voicing)
-    {
-        case Voicing::BritishOD:     bassF = 100.0f; midF = 820.0f;  trebF = 3000.0f; break;
-        case Voicing::Modern3Ch:     bassF = 80.0f;  midF = 900.0f;  trebF = 3200.0f; break;
-        case Voicing::UKIommi:       bassF = 110.0f; midF = 700.0f;  trebF = 2600.0f; break;
-        case Voicing::AmericanThick: bassF = 90.0f;  midF = 750.0f;  trebF = 3000.0f; break;
-    }
-
-    lowS.setCoefficients  (Coeff::makeLowShelf  (sr, bassF, 0.707f, dbToGain (bass)));
-    midPk.setCoefficients (Coeff::makePeakFilter (sr, midF, 1.0f, dbToGain (mid)));
-    highSh.setCoefficients(Coeff::makeHighShelf (sr, trebF, 0.707f, dbToGain (treble)));
-    pres.setCoefficients  (Coeff::makeHighShelf (sr, 6000.0f, 0.707f, dbToGain (p)));
-}
-
-void HeadModel::process (juce::dsp::AudioBlock<float>& block) noexcept
-{
-    const size_t n = block.getNumSamples();
-    if (n == 0) return;
-
-    juce::HeapBlock<char> heap;
-    auto tmp = juce::dsp::AudioBlock<float> (heap, 2, n);
-    tmp.copyFrom (block);
-
-    inHP.process (tmp);
-    forEachSample (tmp, [this] (float x) { return shapingCurve (x * preGain, 1.0f); });
-
-    auto up = oversampling.processSamplesUp (tmp);
-    const float drive = voicing == Voicing::Modern3Ch ? 1.45f :
-                        voicing == Voicing::UKIommi ? 1.15f : 1.25f;
-    forEachSample (up, [drive] (float x) { return shapingCurve (x, drive); });
-    oversampling.processSamplesDown (tmp);
-
-    lowS.process (tmp);
-    midPk.process (tmp);
-    highSh.process (tmp);
-    pres.process (tmp);
-    outLP.process (tmp);
-    forEachSample (tmp, [this] (float x) { return x * makeup; });
-
-    block.copyFrom (tmp);
-}
-
-//==============================================================================
-void PedalModel::reset (double sr, int maxSamples)
-{
-    oversampling.initProcessing ((size_t) maxSamples);
-    oversampling.reset();
-    inputHP.reset(); toneLP.reset(); bodyHP.reset();
-    setParams (Type::Off, 12.0f, 5.0f, 0.0f, sr);
-}
-
-void PedalModel::setParams (Type t, float driveDb, float tone, float levelDb, double sr)
-{
-    type = t;
-    active = (t != Type::Off);
-    preGain = dbToGain (driveDb);
-    level = dbToGain (levelDb);
-
-    inputHP.setCoefficients (Coeff::makeHighPass (sr, t == Type::Distortion ? 90.0f : 40.0f));
-    toneLP.setCoefficients  (Coeff::makeLowPass  (sr, 1500.0f + tone * 650.0f));
-    bodyHP.setCoefficients  (Coeff::makeHighPass (sr, t == Type::Distortion ? 200.0f : 120.0f));
-}
-
-void PedalModel::process (juce::dsp::AudioBlock<float>& block) noexcept
-{
-    if (! active) return;
-
-    const size_t n = block.getNumSamples();
-    juce::HeapBlock<char> heap;
-    auto tmp = juce::dsp::AudioBlock<float> (heap, 2, n);
-    tmp.copyFrom (block);
-
-    inputHP.process (tmp);
-    forEachSample (tmp, [this] (float x) { return x * preGain; });
-
-    auto up = oversampling.processSamplesUp (tmp);
-    const float drive = type == Type::Distortion ? 2.6f : 1.5f;
-    forEachSample (up, [drive] (float x) { return shapingCurve (x, drive); });
-    oversampling.processSamplesDown (tmp);
-
-    toneLP.process (tmp);
-    bodyHP.process (tmp);
-    forEachSample (tmp, [this] (float x) { return x * level; });
-
-    block.copyFrom (tmp);
+    if (! std::isfinite (v)) return 0.0f;
+    return juce::jlimit (-4.0f, 4.0f, v);
 }
 
 //==============================================================================
@@ -149,29 +27,60 @@ APVTS::ParameterLayout JustAHeadProcessor::createParameterLayout()
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "pedal", 1 }, "Pedal",
         StringArray { "Off", "Overdrive", "Distortion" }, 0));
 
-    addFloat ("gain",     "Gain",     0.0f,  30.0f, 18.0f);
-    addFloat ("bass",     "Bass",     0.0f,  10.0f,  5.0f);
-    addFloat ("mid",      "Mid",      0.0f,  10.0f,  5.0f);
-    addFloat ("treble",   "Treble",   0.0f,  10.0f,  5.0f);
-    addFloat ("presence", "Presence", 0.0f,  10.0f,  5.0f);
-    addFloat ("drive",    "Drive",    0.0f,  24.0f, 12.0f);
-    addFloat ("ptone",    "Pedal Tone", 0.0f, 10.0f, 5.0f);
+    addFloat ("gain",     "Gain",        0.0f, 10.0f,  6.0f);
+    addFloat ("bass",     "Bass",        0.0f, 10.0f,  5.0f);
+    addFloat ("mid",      "Mid",         0.0f, 10.0f,  5.0f);
+    addFloat ("treble",   "Treble",      0.0f, 10.0f,  5.0f);
+    addFloat ("presence", "Presence",    0.0f, 10.0f,  5.0f);
+    addFloat ("drive",    "Drive",       0.0f, 10.0f,  5.0f);
+    addFloat ("ptone",    "Pedal Tone",  0.0f, 10.0f,  5.0f);
     addFloat ("level",    "Pedal Level", -24.0f, 12.0f, 0.0f);
-    addFloat ("master",   "Master",   -24.0f, 12.0f, -6.0f);
+    addFloat ("master",   "Master",      -24.0f, 12.0f, 0.0f);
+
+    // --- Efectos post-head ---
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "mod", 1 }, "Mod",
+        StringArray { "Off", "Chorus", "Flanger", "Phaser", "Tremolo", "Slicer", "Ring Mod" }, 0));
+
+    auto addFx = [&layout] (const char* id, const char* name, float min, float max, float def, float step,
+                            float skew, const String& unit)
+    {
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name,
+            NormalisableRange<float> (min, max, step, skew), def,
+            AudioParameterFloatAttributes()
+                .withStringFromValueFunction ([unit, step] (float v, int)
+                    { return String (step >= 1.0f ? String ((int) std::round (v)) : String (v, 1)) + unit; })
+                .withValueFromStringFunction ([] (const String& t) { return t.getFloatValue(); })));
+    };
+    addFx ("mrate",  "Mod Rate",     0.0f, 10.0f,   3.0f, 0.1f, 1.0f, "");
+    addFx ("mdepth", "Mod Depth",    0.0f, 10.0f,   6.0f, 0.1f, 1.0f, "");
+    addFx ("mmix",   "Mod Mix",      0.0f, 100.0f, 50.0f, 1.0f, 1.0f, "%");
+    addFx ("dtime",  "Delay Time",  40.0f, 1200.0f, 380.0f, 1.0f, 0.5f, " ms");
+    addFx ("dfb",    "Delay Feedback", 0.0f, 95.0f, 35.0f, 1.0f, 1.0f, "%");
+    addFx ("dmix",   "Delay Mix",    0.0f, 100.0f,  0.0f, 1.0f, 1.0f, "%");
+    addFx ("rsize",  "Reverb Size",  0.0f, 10.0f,   4.0f, 0.1f, 1.0f, "");
+    addFx ("rdamp",  "Reverb Damp",  0.0f, 10.0f,   5.0f, 0.1f, 1.0f, "");
+    addFx ("rmix",   "Reverb Mix",   0.0f, 100.0f,  0.0f, 1.0f, 1.0f, "%");
 
     return layout;
 }
 
 //==============================================================================
 JustAHeadProcessor::JustAHeadProcessor()
-    : apvts (*this, nullptr, "Parameters", createParameterLayout())
+    : AudioProcessor (BusesProperties()
+                          .withInput ("Input", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+      apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
 }
 
 void JustAHeadProcessor::prepareToPlay (double sr, int samplesPerBlock)
 {
-    head.reset (sr, samplesPerBlock);
-    pedal.reset (sr, samplesPerBlock);
+    engine.prepare (sr, samplesPerBlock);
+    fx.prepare (sr);
+    setLatencySamples (engine.getLatency());
+    mono.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.0f);
+    master.reset (sr, 0.02);
+    master.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (apvts.getRawParameterValue ("master")->load()));
 }
 
 bool JustAHeadProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -183,26 +92,68 @@ bool JustAHeadProcessor::isBusesLayoutSupported (const BusesLayout& layouts) con
 void JustAHeadProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
-    const int n = buffer.getNumSamples();
-    if (n <= 0) return;
+    const int total = buffer.getNumSamples();
+    if (total <= 0 || buffer.getNumChannels() < 2) return;
 
-    auto choice = [this] (const char* id) -> int   { return (int) apvts.getRawParameterValue (id)->load(); };
-    auto param  = [this] (const char* id) -> float { return apvts.getRawParameterValue (id)->load(); };
+    auto param = [this] (const char* id) -> float { return apvts.getRawParameterValue (id)->load(); };
 
-    head.setVoicing ((HeadModel::Voicing) choice ("head"), getSampleRate());
-    head.setParams (param ("gain"), param ("bass"), param ("mid"), param ("treble"), param ("presence"), getSampleRate());
-    pedal.setParams ((PedalModel::Type) choice ("pedal"), param ("drive"), param ("ptone"), param ("level"), getSampleRate());
+    jah::Params p;
+    p.amp = (int) param ("head");
+    p.pedal = (int) param ("pedal");
+    p.gain = param ("gain");
+    p.bass = param ("bass");
+    p.mid = param ("mid");
+    p.treble = param ("treble");
+    p.presence = param ("presence");
+    p.drive = param ("drive");
+    p.ptone = param ("ptone");
+    p.levelDb = param ("level");
+    engine.setParams (p);
 
-    auto block = juce::dsp::AudioBlock<float> (buffer);
-    pedal.process (block);
-    head.process (block);
+    jah::FxParams fp;
+    fp.mod = (int) param ("mod");
+    fp.mrate = param ("mrate");
+    fp.mdepth = param ("mdepth");
+    fp.mmix = param ("mmix") / 100.0f;
+    fp.dtimeMs = param ("dtime");
+    fp.dfb = param ("dfb") / 100.0f;
+    fp.dmix = param ("dmix") / 100.0f;
+    fp.rsize = param ("rsize");
+    fp.rdamp = param ("rdamp");
+    fp.rmix = param ("rmix") / 100.0f;
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+        {
+            if (auto bpm = pos->getBpm()) fp.bpm = *bpm;
+            fp.playing = pos->getIsPlaying();
+            if (auto q = pos->getPpqPosition()) { fp.ppq = *q; fp.hasPpq = true; }
+        }
+    const double fsHost = getSampleRate();
+    master.setTargetValue (juce::Decibels::decibelsToGain (param ("master")));
 
-    const float master = dbToGain (param ("master"));
-    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    float* l = buffer.getWritePointer (0);
+    float* r = buffer.getWritePointer (1);
+    const int chunk = (int) mono.size();
+
+    // Un amp es mono: se suma la entrada, se procesa una vez y se copia a los dos canales.
+    for (int start = 0; start < total; start += chunk)
     {
-        auto* d = buffer.getWritePointer (ch);
+        const int n = juce::jmin (chunk, total - start);
         for (int i = 0; i < n; ++i)
-            d[i] = juce::jlimit (-1.0f, 1.0f, d[i] * master);
+            mono[(size_t) i] = 0.5f * (l[start + i] + r[start + i]);
+
+        engine.process (mono.data(), n);
+
+        jah::FxParams fpc = fp;
+        if (fpc.hasPpq && fsHost > 0.0) fpc.ppq += (double) start / fsHost * fp.bpm / 60.0;
+        fx.process (mono.data(), l + start, r + start, n, fpc);
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = master.getNextValue();
+            l[start + i] = sanitize (l[start + i] * g);
+            r[start + i] = sanitize (r[start + i] * g);
+        }
     }
 }
 
