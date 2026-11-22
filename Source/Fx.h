@@ -9,10 +9,46 @@ struct FxParams
 {
     int mod = 0;                                   // 0 Off, 1 Chorus, 2 Flanger, 3 Phaser, 4 Tremolo, 5 Slicer, 6 Ring Mod
     float mrate = 3, mdepth = 6, mmix = 0.5f;      // rate y depth 0..10, mix 0..1
+    float mshape = 3;                              // 0..10: forma del tremolo (seno->cuadrada) y filo del slicer
     float dtimeMs = 380, dfb = 0.35f, dmix = 0.0f; // delay
     float rsize = 4, rdamp = 5, rmix = 0.0f;       // reverb (size y damp 0..10)
     double bpm = 120.0, ppq = 0.0;
     bool playing = false, hasPpq = false;
+};
+
+// Puerta de ruido: detector de picos con histeresis, retencion y cierre total.
+// thrDb <= -79.5 la apaga.
+class NoiseGate
+{
+public:
+    void prepare (double sr)
+    {
+        fs = sr; env = 0.0; g = 1.0; hold = 0; open = true;
+        decayK = std::exp (-1.0 / (fs * 0.004));
+        atkK = 1.0 - std::exp (-1.0 / (fs * 0.0004));
+    }
+    void process (float* x, int n, float thrDb, float relMs)
+    {
+        const bool off = thrDb <= -79.5f;
+        const double thr = dbToLin (thrDb), thrClose = thr * 0.6;
+        const double relK = 1.0 - std::exp (-1.0 / (fs * 0.001 * clampd (relMs, 5.0, 1000.0)));
+        const int holdN = (int) (fs * 0.02);
+        for (int i = 0; i < n; ++i)
+        {
+            const double a = std::abs ((double) x[i]);
+            env = std::max (a, env * decayK);
+            if (off) open = true;
+            else if (env > thr) { open = true; hold = holdN; }
+            else if (hold > 0) --hold;
+            else if (env < thrClose) open = false;
+            g += ((open ? 1.0 : 0.0) - g) * (open ? atkK : relK);
+            x[i] = (float) (x[i] * g);
+        }
+    }
+private:
+    double fs = 48000.0, env = 0.0, g = 1.0, decayK = 0.99, atkK = 0.05;
+    int hold = 0;
+    bool open = true;
 };
 
 struct Smooth
@@ -60,6 +96,7 @@ public:
         cL.init (maxD); cR.init (maxD); fL.init (maxD); fR.init (maxD);
         sRate.init (fs, 0.05, 3); sDepth.init (fs, 0.05, 6); sMix.init (fs, 0.03, 0.5);
         gateK = 1.0 - std::exp (-1.0 / (fs * 0.004));
+        trK = 1.0 - std::exp (-1.0 / (fs * 0.0003));
         fadeInc = 1.0 / (fs * 0.03);
         cur = -1;
     }
@@ -77,6 +114,7 @@ public:
             return;
         }
 
+        const double slK = 1.0 - std::exp (-1.0 / (fs * 0.001 * (6.0 * std::pow (0.25 / 6.0, p.mshape / 10.0))));
         const double bpm = clampd (p.bpm, 20.0, 400.0);
         static const double stepBeats[5] = { 1.0, 0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0 };
         const double stepSamples = stepBeats[std::min (4, (int) (p.mrate / 2.0f))] * 60.0 / bpm * fs;
@@ -92,7 +130,7 @@ public:
         {
             const double rate = sRate.next (p.mrate), depth = sDepth.next (p.mdepth), mix = sMix.next (p.mmix);
             fade = std::min (1.0, fade + fadeInc);
-            const double m = mix * fade;
+            const double m = (cur == 4 || cur == 5) ? fade : mix * fade;   // tremolo y slicer: 100% procesado, no dejan pasar senal
             const float x = in[i];
             double wl = x, wr = x;
 
@@ -140,10 +178,14 @@ public:
                     }
                     break;
                 }
-                case 4: // Tremolo
+                case 4: // Tremolo: con Shape alto la onda se vuelve cuadrada; con Depth 10 corta del todo
                 {
                     ph1 = wrap (ph1 + std::pow (12.0, rate / 10.0) / fs);
-                    wl = wr = x * (1.0 - depth / 10.0 * (0.5 + 0.5 * sn (ph1)));
+                    const double sh = p.mshape / 10.0, kk = 0.15 + sh * sh * 14.0;
+                    const double lfo = std::tanh (kk * sn (ph1)) / std::tanh (kk);
+                    const double tgtG = 1.0 - depth / 10.0 * (0.5 + 0.5 * lfo);
+                    tg += (tgtG - tg) * trK;
+                    wl = wr = x * tg;
                     break;
                 }
                 case 5: // Slicer: patron de 8 pasos sincronizado al tempo
@@ -152,7 +194,7 @@ public:
                     stepPos += 1.0;
                     if (stepPos >= stepSamples) { stepPos -= stepSamples; step = (step + 1) & 7; }
                     const double target = pattern[step] ? 1.0 : 1.0 - depth / 10.0;
-                    gate += (target - gate) * gateK;
+                    gate += (target - gate) * slK;
                     wl = wr = x * gate;
                     break;
                 }
@@ -179,10 +221,10 @@ private:
         cL.clear(); cR.clear(); fL.clear(); fR.clear();
         for (auto& a : apZ) for (auto& z : a) z = 0.0;
         apFb[0] = apFb[1] = 0.0;
-        ph1 = 0.0; ph2 = 0.0; step = 0; stepPos = 0.0; gate = 1.0; fade = 0.0;
+        ph1 = 0.0; ph2 = 0.0; step = 0; stepPos = 0.0; gate = 1.0; tg = 1.0; fade = 0.0;
     }
 
-    double fs = 48000.0, ph1 = 0, ph2 = 0, apZ[2][6] = {}, apFb[2] = {}, stepPos = 0, gate = 1, gateK = 0.01, fade = 0, fadeInc = 0.001;
+    double fs = 48000.0, ph1 = 0, ph2 = 0, apZ[2][6] = {}, apFb[2] = {}, stepPos = 0, gate = 1, tg = 1, trK = 0.05, gateK = 0.01, fade = 0, fadeInc = 0.001;
     int cur = -1, step = 0;
     FracDelay cL, cR, fL, fR;
     Smooth sRate, sDepth, sMix;

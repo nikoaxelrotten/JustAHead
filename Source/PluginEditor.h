@@ -23,6 +23,7 @@ namespace jahead
     const juce::Colour colMod    { 0xffb36bf0 };
     const juce::Colour colDelay  { 0xff38d39f };
     const juce::Colour colReverb { 0xff7f8cff };
+    const juce::Colour colGate   { 0xffd5dae1 };
 }
 
 //==============================================================================

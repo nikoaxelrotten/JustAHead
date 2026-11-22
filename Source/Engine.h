@@ -155,6 +155,7 @@ inline const Voicing& voicingFor (int amp)
 struct Params
 {
     int amp = 0, pedal = 0;                                  // pedal: 0 Off, 1 Overdrive, 2 Distortion
+    int odMod = 0;                                           // mod del overdrive: 0 Stock, 1 Tight, 2 Hot, 3 Clean, 4 Mid+
     float gain = 6, bass = 5, mid = 5, treble = 5, presence = 5;   // 0..10
     float drive = 5, ptone = 5, levelDb = 0, masterDb = 0;
 };
@@ -163,17 +164,34 @@ struct Params
 class PedalFx
 {
 public:
-    void setup (int t, double drive, double tone, double levelDb, double fs)
+    // Mods del overdrive (tipo Tube Screamer): frecuencia del filtro de medios, corte de graves a la salida,
+    // curva de recorte, asimetria (diodos) y ganancia por unidad de Drive.
+    struct OdMod { double split, outHP, C, k, bias, dbPerDrive, toneMul, trimDb; };
+    static const OdMod& odModFor (int m)
+    {
+        static const OdMod v[5] = {
+            //  split  outHP   C     k    bias  dB/dr  tone   trim
+            {   720.0,  60.0, 0.45, 1.8, 0.00, 4.0,  1.00,  0.0 },   // Stock: Tube Screamer clasico
+            {  1100.0, 120.0, 0.45, 1.8, 0.00, 4.0,  1.00,  0.9 },   // Tight: graves recortados, para metal
+            {   720.0,  60.0, 0.38, 3.0, 0.22, 4.6,  1.15, -0.3 },   // Hot: diodos LED, recorte duro y asimetrico
+            {   250.0,  40.0, 0.80, 1.1, 0.00, 2.4,  1.20, -0.6 },   // Clean: boost casi limpio de rango completo
+            {   520.0,  70.0, 0.45, 1.9, 0.00, 4.2,  0.85, -0.5 }    // Mid+: joroba de medios mas ancha
+        };
+        return v[m < 0 ? 0 : (m > 4 ? 4 : m)];
+    }
+
+    void setup (int t, double drive, double tone, double levelDb, double fs, int odMod = 0)
     {
         type = t;
         if (t == 1)
         {
-            G = dbToLin (drive * 4.0);
-            split.set (720.0, fs);
-            toneLP.set (700.0 * std::pow (10.0, tone * 0.1), fs);
-            outHP.set (60.0, fs);
-            C = 0.45; k = 1.8;
-            comp = interpTable (odComp, 3, drive / 10.0);
+            const OdMod& o = odModFor (odMod);
+            G = dbToLin (drive * o.dbPerDrive);
+            split.set (o.split, fs);
+            toneLP.set (700.0 * o.toneMul * std::pow (10.0, tone * 0.1), fs);
+            outHP.set (o.outHP, fs);
+            C = o.C; k = o.k; bias = o.bias; off = shape (bias, k);
+            comp = interpTable (odComp, 3, drive / 10.0) + o.trimDb;
         }
         else if (t == 2)
         {
@@ -182,7 +200,7 @@ public:
             preLP.set (clampd (3.0e6 / G, 2500.0, 16000.0), fs);
             toneLP.set (900.0 * std::pow (10.0, tone * 0.113), fs);
             outHP.set (160.0, fs);
-            C = 0.5; k = 4.5;
+            C = 0.5; k = 4.5; bias = 0; off = 0;
             comp = interpTable (distComp, 3, drive / 10.0);
         }
         level = dbToLin (levelDb + comp);
@@ -194,7 +212,7 @@ public:
         {
             const double xl = split.lp (x), xh = x - xl;
             double y = xl + G * xh;
-            y = C * shape (y / C, k);
+            y = C * (shape (y / C + bias, k) - off);
             y = outHP.hp (toneLP.lp (y));
             return y * level;
         }
@@ -216,7 +234,7 @@ public:
 
 private:
     int type = 0;
-    double G = 1, level = 1, C = 0.45, k = 1.8, comp = 0;
+    double G = 1, level = 1, C = 0.45, k = 1.8, comp = 0, bias = 0, off = 0;
     OnePole split, toneLP, outHP, inHP, preLP;
 };
 
@@ -241,7 +259,7 @@ public:
 
     void setParams (const Params& p)
     {
-        if (started && (p.amp != tgt.amp || p.pedal != tgt.pedal))
+        if (started && (p.amp != tgt.amp || p.pedal != tgt.pedal || p.odMod != tgt.odMod))
             fadeLeft = kFade;
         tgt = p;
     }
@@ -263,7 +281,7 @@ public:
             sg (sm.gain, tgt.gain); sg (sm.bass, tgt.bass); sg (sm.mid, tgt.mid); sg (sm.treble, tgt.treble);
             sg (sm.presence, tgt.presence); sg (sm.drive, tgt.drive); sg (sm.ptone, tgt.ptone);
             sg (sm.levelDb, tgt.levelDb); sg (sm.masterDb, tgt.masterDb);
-            sm.amp = tgt.amp; sm.pedal = tgt.pedal;
+            sm.amp = tgt.amp; sm.pedal = tgt.pedal; sm.odMod = tgt.odMod;
 
             if (sm.amp != curAmp || sm.pedal != curPedal)
             {
@@ -331,7 +349,7 @@ private:
         sagRel = 1.0 - std::exp (-1.0 / (fsOs * 0.15));
         dcHP.set (20.0, fsOs);
 
-        pedal.setup (sm.pedal, sm.drive, sm.ptone, sm.levelDb, fsOs);
+        pedal.setup (sm.pedal, sm.drive, sm.ptone, sm.levelDb, fsOs, sm.odMod);
 
         outLP1.set (vo.outLP, fs);
         outLP2.set (vo.outLP, fs);

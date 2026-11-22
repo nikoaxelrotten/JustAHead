@@ -38,6 +38,7 @@ public:
 private:
     jah::Engine engine;
     jah::FxChain fx;
+    jah::NoiseGate gate;
     std::vector<float> mono;
     juce::SmoothedValue<float> master;
 

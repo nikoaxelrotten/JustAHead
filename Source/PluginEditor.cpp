@@ -50,12 +50,12 @@ JAHeadLookAndFeel::JAHeadLookAndFeel()
 
 juce::Font JAHeadLookAndFeel::getTextButtonFont (juce::TextButton&, int) { return fnt (12.0f, juce::Font::bold); }
 
-void JAHeadLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool)
+void JAHeadLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
 {
     auto r = b.getLocalBounds().toFloat().reduced (0.5f);
     const bool on = b.getToggleState();
     g.setColour (on ? b.findColour (juce::TextButton::buttonOnColourId)
-                    : juce::Colour (0xff1d2026).brighter (over ? 0.12f : 0.0f));
+                    : juce::Colour (0xff1d2026).brighter (down ? 0.45f : (over ? 0.12f : 0.0f)));
     g.fillRoundedRectangle (r, 6.0f);
     if (! on)
     {
@@ -76,6 +76,84 @@ void JAHeadLookAndFeel::drawCornerResizer (juce::Graphics& g, int w, int h, bool
     {
         const float o = 5.0f + (float) i * 5.0f;
         g.drawLine ((float) w - 3.0f, (float) h - o, (float) w - o, (float) h - 3.0f, 1.6f);
+    }
+}
+
+// Perillas inspiradas en las fotos de cada head
+static void drawAmpKnob (juce::Graphics& g, int skin, const Skin& sk, juce::Point<float> c, float d, float angle)
+{
+    const float R = d * 0.5f;
+    const float sx = std::sin (angle), sy = -std::cos (angle);
+    auto circle = [&] (float r) { return juce::Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (c); };
+    auto lineAt = [&] (float r0, float r1, float th) { return juce::Line<float> (c.x + std::sin (th) * r0, c.y - std::cos (th) * r0, c.x + std::sin (th) * r1, c.y - std::cos (th) * r1); };
+
+    g.setColour (juce::Colours::black.withAlpha (0.5f));
+    g.fillEllipse (circle (R * 1.04f).translated (0.0f, 2.5f));
+
+    if (skin == 0)   // British OD: perilla negra con falda estriada y cuerpo brillante
+    {
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3a3a), c.x - R * 0.5f, c.y - R * 0.6f, juce::Colour (0xff050505), c.x + R * 0.6f, c.y + R * 0.7f, false));
+        g.fillEllipse (circle (R * 1.04f));
+        g.setColour (juce::Colours::white.withAlpha (0.22f));
+        for (int i = 0; i < 30; ++i)
+            g.drawLine (lineAt (R * 0.86f, R * 1.02f, (float) i * juce::MathConstants<float>::twoPi / 30.0f), 1.0f);
+        g.setGradientFill (juce::ColourGradient (sk.knobHi, c.x - R * 0.3f, c.y - R * 0.4f, sk.knobLo, c.x + R * 0.5f, c.y + R * 0.6f, true));
+        g.fillEllipse (circle (R * 0.66f));
+        g.setColour (juce::Colours::white.withAlpha (0.18f));
+        g.drawEllipse (circle (R * 0.62f), 1.0f);
+        g.setColour (sk.pointer);
+        g.drawLine (lineAt (R * 0.12f, R * 1.0f, angle), 3.6f);
+    }
+    else if (skin == 1)   // Modern 3Ch: cromo con moleteado
+    {
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff9aa1aa), c.x - R, c.y - R, juce::Colour (0xff3d4147), c.x + R, c.y + R, false));
+        g.fillEllipse (circle (R * 1.04f));
+        for (int i = 0; i < 56; ++i)
+        {
+            g.setColour ((i % 2 ? juce::Colours::white : juce::Colours::black).withAlpha (0.35f));
+            g.drawLine (lineAt (R * 0.90f, R * 1.03f, (float) i * juce::MathConstants<float>::twoPi / 56.0f), 1.2f);
+        }
+        g.setGradientFill (juce::ColourGradient (sk.knobHi, c.x - R * 0.35f, c.y - R * 0.45f, sk.knobLo, c.x + R * 0.6f, c.y + R * 0.7f, true));
+        g.fillEllipse (circle (R * 0.84f));
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.drawEllipse (circle (R * 0.84f), 1.0f);
+        g.setColour (sk.pointer);
+        g.drawLine (lineAt (R * 0.28f, R * 0.86f, angle), 2.8f);
+    }
+    else if (skin == 2)   // UK Iommi: cuerpo rojo translucido con puntero afilado
+    {
+        g.setGradientFill (juce::ColourGradient (sk.knobHi, c.x - R * 0.4f, c.y - R * 0.5f, sk.knobLo, c.x + R * 0.7f, c.y + R * 0.8f, true));
+        g.fillEllipse (circle (R * 0.92f));
+        g.setColour (juce::Colours::black.withAlpha (0.45f));
+        g.drawEllipse (circle (R * 0.92f), 1.4f);
+        g.setColour (juce::Colours::white.withAlpha (0.28f));
+        g.fillEllipse (juce::Rectangle<float> (R * 0.8f, R * 0.4f).withCentre ({ c.x - R * 0.22f, c.y - R * 0.45f }));
+        juce::Path w;   // puntero en cuña que sobresale del cuerpo
+        const float px = std::cos (angle), py = std::sin (angle);
+        const juce::Point<float> tip (c.x + sx * R * 1.12f, c.y + sy * R * 1.12f);
+        const juce::Point<float> b0 (c.x + sx * R * 0.1f - px * R * 0.26f, c.y + sy * R * 0.1f - py * R * 0.26f);
+        const juce::Point<float> b1 (c.x + sx * R * 0.1f + px * R * 0.26f, c.y + sy * R * 0.1f + py * R * 0.26f);
+        w.addTriangle (b0, b1, tip);
+        g.setColour (sk.pointer);
+        g.fillPath (w);
+        g.setColour (juce::Colours::black.withAlpha (0.55f));
+        g.strokePath (w, juce::PathStrokeType (1.0f));
+    }
+    else   // American Thick: barril de aluminio azul con anillos y halo
+    {
+        g.setColour (sk.accent.withAlpha (0.20f));
+        g.fillEllipse (circle (R * 1.14f));
+        g.setGradientFill (juce::ColourGradient (sk.knobHi, c.x - R * 0.5f, c.y - R * 0.6f, sk.knobLo, c.x + R * 0.7f, c.y + R * 0.8f, false));
+        g.fillEllipse (circle (R * 1.0f));
+        g.setColour (juce::Colours::black.withAlpha (0.3f));
+        for (float rr : { 0.9f, 0.76f, 0.62f })
+            g.drawEllipse (circle (R * rr), 1.2f);
+        g.setColour (juce::Colours::white.withAlpha (0.2f));
+        g.drawEllipse (circle (R * 0.97f), 1.0f);
+        g.setColour (sk.pointer.withAlpha (0.9f));
+        g.drawLine (lineAt (R * 0.55f, R * 0.95f, angle), 4.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.85f));
+        g.fillEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre ({ c.x + sx * R * 0.82f, c.y + sy * R * 0.82f }));
     }
 }
 
@@ -107,6 +185,12 @@ void JAHeadLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w
     }
     g.setColour (ringCol);
     g.strokePath (value, juce::PathStrokeType (3.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    if (amp)
+    {
+        drawAmpKnob (g, skin, sk, c, D * 0.72f, angle);
+        return;
+    }
 
     // Cuerpo
     auto body = outer.reduced (D * 0.14f);
@@ -157,6 +241,7 @@ public:
     }
 
     void setColours (juce::Colour label, juce::Colour value) { labelCol = label; valueCol = value; repaint(); }
+    void setActive (bool a) { slider.setEnabled (a); setAlpha (a ? 1.0f : 0.32f); }
 
     void resized() override { slider.setBounds ((getWidth() - knobSize) / 2, 0, knobSize, knobSize); }
 
@@ -184,6 +269,7 @@ private:
 static juce::String fmt1 (double v)  { return juce::String (v, 1); }
 static juce::String fmtDb (double v) { return juce::String (v, 1) + " dB"; }
 static juce::String fmtPct (double v){ return juce::String ((int) std::round (v)) + "%"; }
+static juce::String fmtGate (double v) { return v <= -79.5 ? juce::String ("OFF") : juce::String (v, 1) + " dB"; }
 static juce::String fmtMs (double v) { return juce::String ((int) std::round (v)) + " ms"; }
 
 //==============================================================================
@@ -259,13 +345,19 @@ public:
         pedalStrip = std::make_unique<ChoiceStrip> (p.apvts, "pedal", juce::StringArray { "Off", "Overdrive", "Distortion" },
                                                     std::vector<juce::Colour> { colPedal }, 3, 30, 6, 202, false);
         pedalStrip->setBounds (42, 108, 264, 30);
-        pedalStrip->onChange = [this] (int i) { pedal = i; repaint(); };
         addAndMakeVisible (*pedalStrip);
+
+        // Mods del overdrive (variantes de Tube Screamer)
+        odStrip = std::make_unique<ChoiceStrip> (p.apvts, "odmod", juce::StringArray { "Stock", "Tight", "Hot", "Clean", "Mid+" },
+                                                 std::vector<juce::Colour> { colPedal }, 5, 24, 4, 204, false);
+        odStrip->setBounds (42, 146, 264, 24);
+        addAndMakeVisible (*odStrip);
+        pedalStrip->onChange = [this] (int i) { pedal = i; odStrip->setVisible (i == 1); repaint(); };
 
         // Mod
         modStrip = std::make_unique<ChoiceStrip> (p.apvts, "mod", juce::StringArray { "Off", "Chorus", "Flanger", "Phaser", "Tremolo", "Slicer", "Ring Mod" },
                                                   std::vector<juce::Colour> { colMod }, 4, 28, 6, 203, false);
-        modStrip->setBounds (42, 502, 384, 62);
+        modStrip->setBounds (228, 502, 336, 62);
         addAndMakeVisible (*modStrip);
 
         // Perillas de pedal
@@ -279,16 +371,30 @@ public:
         for (int i = 0; i < 6; ++i)
             ampKnobs.push_back (addKnob (ids[i], names[i], 340 + i * 139 + 19, 346, 100, 70, true, juce::Colours::white, i == 5 ? fmtDb : fmt1));
 
-        // Efectos
-        addKnob ("mrate",  "RATE",     42 + 0 * 128 + 14, 574, 100, 60, false, colMod, fmt1);
-        addKnob ("mdepth", "DEPTH",    42 + 1 * 128 + 14, 574, 100, 60, false, colMod, fmt1);
-        addKnob ("mmix",   "MIX",      42 + 2 * 128 + 14, 574, 100, 60, false, colMod, fmtPct);
-        addKnob ("dtime",  "TIME",     472 + 0 * 108 + 4, 574, 100, 60, false, colDelay, fmtMs);
-        addKnob ("dfb",    "FEEDBACK", 472 + 1 * 108 + 4, 574, 100, 60, false, colDelay, fmtPct);
-        addKnob ("dmix",   "MIX",      472 + 2 * 108 + 4, 574, 100, 60, false, colDelay, fmtPct);
-        addKnob ("rsize",  "SIZE",     842 + 0 * 108 + 2, 574, 100, 60, false, colReverb, fmt1);
-        addKnob ("rdamp",  "DAMP",     842 + 1 * 108 + 2, 574, 100, 60, false, colReverb, fmt1);
-        addKnob ("rmix",   "MIX",      842 + 2 * 108 + 2, 574, 100, 60, false, colReverb, fmtPct);
+        // Gate (antes del pedal y del amp)
+        addKnob ("gthr", "THRESH",  32, 574, 80, 58, false, colGate, fmtGate);
+        addKnob ("grel", "RELEASE", 112, 574, 80, 58, false, colGate, fmtMs);
+
+        // Mod
+        addKnob ("mrate",  "RATE",  214 + 0 * 88, 574, 84, 58, false, colMod, fmt1);
+        addKnob ("mdepth", "DEPTH", 214 + 1 * 88, 574, 84, 58, false, colMod, fmt1);
+        shapeKnob = addKnob ("mshape", "SHAPE", 214 + 2 * 88, 574, 84, 58, false, colMod, fmt1);
+        mixKnob   = addKnob ("mmix",   "MIX",   214 + 3 * 88, 574, 84, 58, false, colMod, fmtPct);
+
+        // Delay + TAP
+        addKnob ("dtime",  "TIME",     596 + 0 * 92, 574, 84, 58, false, colDelay, fmtMs);
+        addKnob ("dfb",    "FEEDBACK", 596 + 1 * 92, 574, 84, 58, false, colDelay, fmtPct);
+        addKnob ("dmix",   "MIX",      596 + 2 * 92, 574, 84, 58, false, colDelay, fmtPct);
+        tapButton.setButtonText ("TAP");
+        tapButton.getProperties().set ("hint", (juce::int64) colDelay.getARGB());
+        tapButton.setBounds (685, 502, 118, 32);
+        tapButton.onClick = [this] { tap(); };
+        addAndMakeVisible (tapButton);
+
+        // Reverb
+        addKnob ("rsize",  "SIZE", 902 + 0 * 88, 574, 84, 58, false, colReverb, fmt1);
+        addKnob ("rdamp",  "DAMP", 902 + 1 * 88, 574, 84, 58, false, colReverb, fmt1);
+        addKnob ("rmix",   "MIX",  902 + 2 * 88, 574, 84, 58, false, colReverb, fmtPct);
 
         // Botones de escala
         const float scales[] = { 0.75f, 1.0f, 1.25f, 1.5f };
@@ -306,9 +412,15 @@ public:
         }
 
         headStrip->onChange = [this] (int i) { applySkin (i); };
+        modStrip->onChange = [this] (int i)
+        {
+            shapeKnob->setActive (i == 4 || i == 5);              // Shape: solo tremolo y slicer
+            mixKnob->setActive (i != 0 && i != 4 && i != 5);       // Mix: tremolo y slicer son 100% procesados
+        };
         headStrip->start();
         pedalStrip->start();
         modStrip->start();
+        odStrip->start();
     }
 
     void updateScaleHighlight (float s)
@@ -366,7 +478,10 @@ public:
 
         // --- Pedales
         drawModule (g, { 24.0f, 72.0f, 300.0f, 380.0f }, colPedal, "PEDALES");
-        drawStompbox (g, 174.0f, 158.0f);
+        g.saveState();
+        g.addTransform (juce::AffineTransform::scale (0.78f, 0.78f, 174.0f, 190.0f));
+        drawStompbox (g, 174.0f, 190.0f);
+        g.restoreState();
 
         // --- Amp: imagen del head + panel de controles
         {
@@ -406,16 +521,38 @@ public:
         }
 
         // --- Efectos
-        drawModule (g, { 24.0f, 466.0f, 420.0f, 222.0f }, colMod, "MOD");
-        drawModule (g, { 454.0f, 466.0f, 360.0f, 222.0f }, colDelay, "DELAY");
-        drawModule (g, { 824.0f, 466.0f, 352.0f, 222.0f }, colReverb, "REVERB");
+        drawModule (g, { 24.0f, 466.0f, 176.0f, 222.0f }, colGate, "GATE");
+        drawModule (g, { 210.0f, 466.0f, 372.0f, 222.0f }, colMod, "MOD");
+        drawModule (g, { 592.0f, 466.0f, 296.0f, 222.0f }, colDelay, "DELAY");
+        drawModule (g, { 898.0f, 466.0f, 278.0f, 222.0f }, colReverb, "REVERB");
         g.setColour (juce::Colour (0xff6c727c));
         g.setFont (fnt (11.0f));
-        g.drawText (juce::String::fromUTF8 ("Est\xc3\xa9reo ping-pong"), 472, 520, 324, 18, juce::Justification::centred);
-        g.drawText (juce::String::fromUTF8 ("Reverb FDN de 8 l\xc3\xadneas"), 842, 520, 316, 18, juce::Justification::centred);
+        g.drawText (juce::String::fromUTF8 ("Antes del pedal y el amp"), 32, 520, 160, 18, juce::Justification::centred);
+        g.drawText (juce::String::fromUTF8 ("Est\xc3\xa9reo ping-pong"), 604, 540, 272, 16, juce::Justification::centred);
+        g.drawText (juce::String::fromUTF8 ("Reverb FDN de 8 l\xc3\xadneas"), 910, 520, 254, 18, juce::Justification::centred);
+        if (pedal == 1)
+        {
+            g.drawText ("TUBE SCREAMER MOD", 42, 172, 264, 12, juce::Justification::centred);
+        }
     }
 
 private:
+    void tap()
+    {
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        if (! taps.empty() && now - taps.back() > 2000.0) taps.clear();
+        taps.push_back (now);
+        if (taps.size() > 5) taps.erase (taps.begin());
+        if (taps.size() < 2) return;
+        const double ms = (taps.back() - taps.front()) / (double) (taps.size() - 1);
+        if (auto* prm = proc.apvts.getParameter ("dtime"))
+        {
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (prm->convertTo0to1 ((float) juce::jlimit (40.0, 1200.0, ms)));
+            prm->endChangeGesture();
+        }
+    }
+
     void drawModule (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour col, const juce::String& title)
     {
         g.setColour (juce::Colour (0xff15171c));
@@ -478,7 +615,11 @@ private:
     std::function<void (float)> setScale;
     int skin = 0, pedal = 0;
     juce::Image heads[4];
-    std::unique_ptr<ChoiceStrip> headStrip, pedalStrip, modStrip;
+    std::unique_ptr<ChoiceStrip> headStrip, pedalStrip, modStrip, odStrip;
+    KnobUnit* shapeKnob = nullptr;
+    KnobUnit* mixKnob = nullptr;
+    juce::TextButton tapButton;
+    std::vector<double> taps;
     std::vector<std::unique_ptr<KnobUnit>> knobs;
     std::vector<KnobUnit*> ampKnobs;
     std::array<juce::TextButton, 4> scaleButtons;

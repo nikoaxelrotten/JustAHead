@@ -27,6 +27,9 @@ APVTS::ParameterLayout JustAHeadProcessor::createParameterLayout()
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "pedal", 1 }, "Pedal",
         StringArray { "Off", "Overdrive", "Distortion" }, 0));
 
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "odmod", 1 }, "OD Mod",
+        StringArray { "Stock", "Tight", "Hot", "Clean", "Mid+" }, 0));
+
     addFloat ("gain",     "Gain",        0.0f, 10.0f,  6.0f);
     addFloat ("bass",     "Bass",        0.0f, 10.0f,  5.0f);
     addFloat ("mid",      "Mid",         0.0f, 10.0f,  5.0f);
@@ -53,6 +56,9 @@ APVTS::ParameterLayout JustAHeadProcessor::createParameterLayout()
     };
     addFx ("mrate",  "Mod Rate",     0.0f, 10.0f,   3.0f, 0.1f, 1.0f, "");
     addFx ("mdepth", "Mod Depth",    0.0f, 10.0f,   6.0f, 0.1f, 1.0f, "");
+    addFx ("mshape", "Mod Shape",    0.0f, 10.0f,   3.0f, 0.1f, 1.0f, "");
+    addFx ("gthr",   "Gate Threshold", -80.0f, -20.0f, -80.0f, 0.5f, 1.0f, " dB");
+    addFx ("grel",   "Gate Release", 10.0f, 500.0f,  80.0f, 1.0f, 0.5f, " ms");
     addFx ("mmix",   "Mod Mix",      0.0f, 100.0f, 50.0f, 1.0f, 1.0f, "%");
     addFx ("dtime",  "Delay Time",  40.0f, 1200.0f, 380.0f, 1.0f, 0.5f, " ms");
     addFx ("dfb",    "Delay Feedback", 0.0f, 95.0f, 35.0f, 1.0f, 1.0f, "%");
@@ -77,6 +83,7 @@ void JustAHeadProcessor::prepareToPlay (double sr, int samplesPerBlock)
 {
     engine.prepare (sr, samplesPerBlock);
     fx.prepare (sr);
+    gate.prepare (sr);
     setLatencySamples (engine.getLatency());
     mono.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.0f);
     master.reset (sr, 0.02);
@@ -108,6 +115,7 @@ void JustAHeadProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     p.drive = param ("drive");
     p.ptone = param ("ptone");
     p.levelDb = param ("level");
+    p.odMod = (int) param ("odmod");
     engine.setParams (p);
 
     jah::FxParams fp;
@@ -115,6 +123,8 @@ void JustAHeadProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     fp.mrate = param ("mrate");
     fp.mdepth = param ("mdepth");
     fp.mmix = param ("mmix") / 100.0f;
+    fp.mshape = param ("mshape");
+    const float gateThr = param ("gthr"), gateRel = param ("grel");
     fp.dtimeMs = param ("dtime");
     fp.dfb = param ("dfb") / 100.0f;
     fp.dmix = param ("dmix") / 100.0f;
@@ -142,6 +152,7 @@ void JustAHeadProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         for (int i = 0; i < n; ++i)
             mono[(size_t) i] = 0.5f * (l[start + i] + r[start + i]);
 
+        gate.process (mono.data(), n, gateThr, gateRel);
         engine.process (mono.data(), n);
 
         jah::FxParams fpc = fp;
